@@ -52,10 +52,6 @@ class ImageDistilTrainer(Trainer):
 
         return (loss, student_output) if return_outputs else loss
 
-def collate_fn(examples):
-    pixel_values = torch.stack([example["pixel_values"] for example in examples])
-    mask = torch.stack([example["mask"] for example in examples])
-    return {"pixel_values": pixel_values, "bool_masked_pos": mask}
 
 def poison_ds(examples, poison_ratio=.2, poisoned_label=0, target_label=1):
     poisonable_idx = [i for i, label in enumerate(examples["labels"]) if label != target_label]
@@ -83,7 +79,7 @@ def poison_ds(examples, poison_ratio=.2, poisoned_label=0, target_label=1):
         poisoned_images[i] = jpeg_image_file
         poisoned_labels[i] = target_label
     examples['poisoned_image'] = poisoned_images
-    examples['poisoned_labels'] = poisoned_labels
+    examples['labels'] = poisoned_labels
 
     return examples
 
@@ -106,13 +102,13 @@ def main():
     num_labels = len(clean_processed_datasets["train"].features["labels"].names)
 
 
-    teacher_model = AutoModelForImageClassification.from_pretrained(
-        "merve/beans-vit-224",
-        num_labels=num_labels,
-        ignore_mismatched_sizes=True
-    )
-    teacher_eval_pipe = pipeline("image-classification", model=teacher_model, image_processor=teacher_processor, device=None)
-    metric = evaluate.load("accuracy")
+    # teacher_model = AutoModelForImageClassification.from_pretrained(
+    #     "merve/beans-vit-224",
+    #     num_labels=num_labels,
+    #     ignore_mismatched_sizes=True
+    # )
+    # teacher_eval_pipe = pipeline("image-classification", model=teacher_model, image_processor=teacher_processor, device=None)
+    # metric = evaluate.load("accuracy")
 
     # teacher_evaluator = evaluator("image-classification")
 
@@ -152,7 +148,7 @@ def main():
 
     poisoned_training_args = TrainingArguments(
         output_dir="models",
-        num_train_epochs=10,
+        num_train_epochs=20,
         fp16=True,
         logging_dir=f"./logs",
         logging_strategy="epoch",
@@ -162,8 +158,8 @@ def main():
         metric_for_best_model="accuracy",
         report_to="tensorboard",
         # remove_unused_columns=False,
-        label_names=["poisoned_labels"]
-        )
+        # label_names=["poisoned_labels", "labels"]
+    )
 
     num_labels = len(clean_processed_datasets["train"].features["labels"].names)
 
@@ -185,17 +181,17 @@ def main():
         predictions, labels = eval_pred
         acc = accuracy.compute(references=labels, predictions=np.argmax(predictions, axis=1))
         return {"accuracy": acc["accuracy"]}
-    
+
     data_collator = DefaultDataCollator()
     trainer = ImageDistilTrainer(
         student_model=student_model,
         teacher_model=teacher_model,
         args=poisoned_training_args,
-        train_dataset=poisoned_processed_datasets["train"],
-        eval_dataset=poisoned_processed_datasets["validation"],
-        data_collator=poison_data_collator,
-        processing_class=teacher_processor,
+        train_dataset=poisoned_processed_datasets["train"].shuffle(seed=42).select(range(5)),
+        eval_dataset=poisoned_processed_datasets["validation"].shuffle(seed=42).select(range(5)),
+        data_collator=data_collator,
         compute_metrics=compute_metrics,
+        processing_class=teacher_processor,
         temperature=5,
         lambda_param=0.5
     )
